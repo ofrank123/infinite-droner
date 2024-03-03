@@ -1,0 +1,4 @@
+Builds/
+.cache
+JuceLibraryCode/
+compile_commands.json
