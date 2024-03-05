@@ -96,6 +96,18 @@ void InfiniteDronerAudioProcessor::prepareToPlay (double sampleRate, int samples
 {
     // Use this method as the place to do any pre-playback
     measurer.reset(sampleRate, samplesPerBlock);
+    
+    //- ojf: not particularly in keeping with the whole diy approach i've had
+    // with the rest of this project, but it sounds alright and i didn't want
+    // to write an fdn reverb :)
+    juce::Reverb::Parameters reverbParams = {
+        .roomSize = 1.0f,
+        .damping = 0.2f,
+        .wetLevel = .60,
+        .dryLevel = .40,
+        .width = 1.0f,
+    };
+
     init(&context, sampleRate, samplesPerBlock);
 }
 
@@ -168,6 +180,11 @@ void InfiniteDronerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     };
 
     processSamples(&context, &stereoBuffer);
+    reverb.processStereo(
+        stereoBuffer.leftBuffer.ptr,
+        stereoBuffer.rightBuffer.ptr,
+        numSamples
+    );
     f32 cpuLoad = measurer.getLoadAsPercentage();
     printf("CPU LOAD: %f\n", cpuLoad);
 }

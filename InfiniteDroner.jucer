@@ -5,6 +5,11 @@
               displaySplashScreen="0">
   <MAINGROUP id="DbVWdd" name="InifiniteDroner">
     <GROUP id="{442C9858-0B38-483F-5531-9F3F72D60303}" name="Source">
+      <FILE id="QvijO7" name="LadderFilter.cpp" compile="1" resource="0"
+            file="Source/LadderFilter.cpp"/>
+      <FILE id="YVXtRJ" name="LadderFilter.h" compile="0" resource="0" file="Source/LadderFilter.h"/>
+      <FILE id="M1dKKP" name="Oscillator.h" compile="0" resource="0" file="Source/Oscillator.h"/>
+      <FILE id="UY4RcJ" name="Oscillator.cpp" compile="1" resource="0" file="Source/Oscillator.cpp"/>
       <FILE id="olKrM1" name="Plugin.cpp" compile="1" resource="0" file="Source/Plugin.cpp"/>
       <FILE id="R1lMx5" name="Plugin.h" compile="0" resource="0" file="Source/Plugin.h"/>
       <FILE id="Txnh24" name="PluginProcessor.cpp" compile="1" resource="0"
