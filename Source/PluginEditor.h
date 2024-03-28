@@ -1,10 +1,12 @@
+// Copyright (c) 2024 Oliver Frank
+// Licensed under the GNU Public License (https://www.gnu.org/licenses/)
+
 #pragma once
 
-#include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include <JuceHeader.h>
 
-class InfiniteDronerAudioProcessorEditor  : public juce::AudioProcessorEditor,
-                                       public juce::Timer
+class InfiniteDronerAudioProcessorEditor : public juce::AudioProcessorEditor
 {
 public:
     InfiniteDronerAudioProcessorEditor (InfiniteDronerAudioProcessor&);
@@ -13,8 +15,6 @@ public:
     void paint (juce::Graphics&) override;
 
     void resized() override;
-
-    void timerCallback() override;
 
 private:
     InfiniteDronerAudioProcessor& audioProcessor;

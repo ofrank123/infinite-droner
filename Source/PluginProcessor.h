@@ -1,13 +1,16 @@
+// Copyright (c) 2024 Oliver Frank
+// Licensed under the GNU Public License (https://www.gnu.org/licenses/)
+
 #pragma once
 
 #include <JuceHeader.h>
 
 #include "Plugin.h"
 
-class InfiniteDronerAudioProcessor  : public juce::AudioProcessor
+class InfiniteDronerAudioProcessor : public juce::AudioProcessor
 {
 public:
-    PluginContext context;
+    PluginContext context; // plugin state
 
     InfiniteDronerAudioProcessor();
     ~InfiniteDronerAudioProcessor() override;
@@ -15,9 +18,9 @@ public:
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
 
-   #ifndef JucePlugin_PreferredChannelConfigurations
+#ifndef JucePlugin_PreferredChannelConfigurations
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
-   #endif
+#endif
 
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
@@ -41,10 +44,7 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
 private:
-    //- ojf: Performance measurement
-    juce::AudioProcessLoadMeasurer measurer;
-
-    juce::Reverb reverb;
+    juce::Reverb reverb; // global reverb
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InfiniteDronerAudioProcessor)
 };

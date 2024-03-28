@@ -1,368 +1,480 @@
-#include "Oscillator.h"
+// Copyright (c) 2024 Oliver Frank
+// Licensed under the GNU Public License (https://www.gnu.org/licenses/)
 
-//- ojf: here lie the wavetables, generated in WaveTables.m matlab script
+#include "Oscillator.h"
+#include "Lfo.h"
+#include "Voice.h"
+
+//- ojf: i've chosen to put all of the oscillator, lfo, and voice code
+// in this source file as they're all so related.  per the assignment
+// spec the header files for each struct have been separated out.
+
+
+//------------------------------
+//~ ojf: oscillators
+
+//- ojf: here lie the wavetables, generated in WaveTables.m matlab script.
+// multiple octaves are generated for each table, so as to get as many
+// partials present in the outputted wave as possible, while minimizing
+// aliasing for higher frequency.  this produces low frequency tones that
+// have a nice "bite," and high frequency tones that are lacking any
+// noticeable aliasing.
 #include "./tables_N2048_f40_o9.h"
 //- ojf: constants associated with the wavetable
 const usize wavetable_samples = 2048;
 const f32 wavetable_f0 = 40;
 const f32 wavetable_octaves = 9;
 
-internal inline void updatePhase(Oscillator *osc, f32 frequencyMod) {
+/**
+ * INTERNAL update phase of an oscillator, taking into account frequency 
+ * modulation
+ *
+ * @param oscillator to update
+ * @param frequency modulation
+ */
+internal inline void updatePhase (Oscillator* osc, f32 frequencyMod)
+{
+    //- ojf: most of the oscillators use some form of modulation, so
+    // recalculating here is not too big of a hit (especially considering
+    // the 4 ladder filters in comparison :) )
     f32 phaseDelta = (osc->frequency + frequencyMod) / osc->sampleRate;
     osc->phase += phaseDelta;
 
-    while(osc->phase > 1) {
+    while (osc->phase > 1)
+    {
         osc->phase -= 1;
     }
 }
 
-internal inline f32 nextSineSample(
-    Oscillator *osc,
-    f32 frequencyMod,
-    f32 amplitudeMod
-) {
-    updatePhase(osc, frequencyMod); 
-    return amplitudeMod * sin(TWO_PI * osc->phase);
-}
-
-internal inline void nextSineSamples(
-    Oscillator *osc,
+/**
+ * INTERNAL function to sample a wavetable
+ *
+ * @param oscillator to pull samples from
+ * @param output buffer
+ * @param enable frequency modulation
+ * @param frequency modulation samples
+ * @param enable amplitude modulation
+ * @param amplitude modulation samples
+ * @param enables overwriting of output buffer, otherwise accumulate
+ * @param mono/stereo toggle
+ * @param base amplitude of outputted signal
+ * @param wavetable to use
+ */
+internal inline void sampleTable (
+    Oscillator* osc,
     StereoBuffer output,
     bool useFreqMod,
-    Slice<f32> frequencyModulation,
+    Buffer frequencyModulation,
     bool useAmpMod,
-    Slice<f32> amplitudeModulation,
-    bool overwrite,
-    bool mono,
-    f32 amplitude
-) {
-    for (int i=0; i<output.leftBuffer.len; i++) {
-        f32 sample = nextSineSample(
-            osc, 
-            useFreqMod ? frequencyModulation[i] : 0, 
-            amplitude + (useAmpMod ? amplitudeModulation[i] : 0)
-        );
-
-        if (overwrite) {
-            output.leftBuffer[i] = sample;
-            if (!mono) {
-                output.rightBuffer[i] = sample;
-            }
-        } else {
-            output.leftBuffer[i] += sample;
-            if (!mono) {
-                output.rightBuffer[i] += sample;
-            }
-        }
-    }
-}
-
-internal inline void nextNoiseSamples(
-    Oscillator *osc,
-    StereoBuffer output,
-    bool useAmpMod,
-    Slice<f32> amplitudeModulation,
-    bool overwrite,
-    bool mono,
-    f32 amplitude
-) {
-    for (int i=0; i<output.leftBuffer.len; i++) {
-        f32 sample = ((f32) rand() / (f32) RAND_MAX) * 2.0 - 1.0;
-        sample *= amplitude + (useAmpMod ? amplitudeModulation[i] : 0);
-
-        if (overwrite) {
-            output.leftBuffer[i] = sample;
-            if (!mono) {
-                output.rightBuffer[i] = sample;
-            }
-        } else {
-            output.leftBuffer[i] += sample;
-            if (!mono) {
-                output.rightBuffer[i] += sample;
-            }
-        }
-    }
-}
-
-internal inline f32 nextTableSample(
-    Oscillator *osc,
-    f32 frequencyMod,
-    f32 amplitudeMod,
-    const float *table
-) {
-    updatePhase(osc, frequencyMod);
-
-    f32 table_offset = osc->octave * wavetable_samples;
-    f32 table_idx = table_offset + osc->phase * wavetable_samples;
-
-    f32 table_sample_l = table[(usize) floor(table_idx)];
-    f32 table_sample_r = table[(usize) ceil(table_idx)];
-
-    return amplitudeMod * 0.5 * (table_sample_l + table_sample_r);
-}
-
-internal inline void _sampleTable(
-    Oscillator *osc, 
-    StereoBuffer output,
-    bool useFreqMod,
-    Slice<f32> frequencyModulation,
-    bool useAmpMod,
-    Slice<f32> amplitudeModulation,
+    Buffer amplitudeModulation,
     bool overwrite,
     bool mono,
     f32 amplitude,
-    const float *table
-) {
-    //- ojf: this loop (and the sine wave loop) appears to have
+    const float* table)
+{
+    //- ojf: this loop (and the sine wave/noise loops) appears to have
     // a lot of branches that could be precalculated.  to solve
     // this, i created a more optimized (or so i thought)
-    // version, that precomputed the branches, and had
-    // made the permutations of the loops with a macro.  obviously
-    // this was.
-    for (int i=0; i<output.leftBuffer.len; i++) {
-        f32 sample = nextTableSample(
-            osc, 
-            useFreqMod ? frequencyModulation[i] : 0, 
-            amplitude + (useAmpMod ? amplitudeModulation[i] : 0),
-            table
-        );
-        
-        if (overwrite) {
+    // version, that factored out the branches, and had made the
+    // permutations of the loops with a macro.  in debug builds, the
+    // factored version was quite a bit faster, but in release builds,
+    // i could not detect a difference.  after some investigation of
+    // the assembler generated by clang at -O3 (using godbolt.org)
+    // i found that the compiler would perform the factoring out that i
+    // had done manually.  as a result, i have chosen to keep the branches
+    // in for the sake of keeping the code readable.
+    for (int i = 0; i < output.leftBuffer.len; i++)
+    {
+        updatePhase (osc, useFreqMod ? frequencyModulation[i] : 0);
+
+        //- ojf: get the fractional index into the approriate wavetable
+        f32 table_offset = osc->octave * wavetable_samples;
+        f32 table_idx = table_offset + osc->phase * wavetable_samples;
+
+        //- ojf: get floor and ceiling samples to linear interpolate
+        f32 table_sample_l = table[(usize) floor (table_idx)];
+        f32 table_sample_r = table[(usize) ceil (table_idx)];
+
+        //- ojf: interpolate and modulate sample
+        f32 sample = (amplitude + (useAmpMod ? amplitudeModulation[i] : 0))
+                     * 0.5 * (table_sample_l + table_sample_r);
+
+        //- ojf: write to buffer
+        if (overwrite)
+        {
             output.leftBuffer[i] = sample;
-            if (!mono) {
+            if (! mono)
+            {
                 output.rightBuffer[i] = sample;
             }
-        } else {
+        }
+        else
+        {
             output.leftBuffer[i] += sample;
-            if (!mono) {
+            if (! mono)
+            {
                 output.rightBuffer[i] += sample;
             }
         }
     }
 }
 
-internal void _nextOscillatorSamples(
-    Oscillator *osc,
+/**
+ * INTERNAL fill a buffer with next sample of a sine wave
+ *
+ * @param oscillator to pull samples from
+ * @param output buffer
+ * @param enable frequency modulation
+ * @param frequency modulation samples
+ * @param enable amplitude modulation
+ * @param amplitude modulation samples
+ * @param enables overwriting of output buffer, otherwise accumulate
+ * @param mono/stereo toggle
+ * @param base amplitude of outputted signal
+ * @param wavetable to use
+ */
+internal inline void nextSineSamples (
+    Oscillator* osc,
     StereoBuffer output,
     bool useFreqMod,
-    Slice<f32> frequencyMod,
+    Buffer frequencyModulation,
     bool useAmpMod,
-    Slice<f32> amplitudeMod,
+    Buffer amplitudeModulation,
     bool overwrite,
     bool mono,
-    f32 amplitude
-) {
-    switch (osc->type) {
-        case OSC_SINE: {
-            nextSineSamples(
-                osc, 
-                output, 
+    f32 amplitude)
+{
+    for (int i = 0; i < output.leftBuffer.len; i++)
+    {
+        //- ojf: calculate sine sample and modulate
+        updatePhase (osc, useFreqMod ? frequencyModulation[i] : 0);
+        f32 sample = (amplitude + (useAmpMod ? amplitudeModulation[i] : 0))
+                     * sin (TWO_PI * osc->phase);
+
+        if (overwrite)
+        {
+            output.leftBuffer[i] = sample;
+            if (! mono)
+            {
+                output.rightBuffer[i] = sample;
+            }
+        }
+        else
+        {
+            output.leftBuffer[i] += sample;
+            if (! mono)
+            {
+                output.rightBuffer[i] += sample;
+            }
+        }
+    }
+}
+
+/**
+ * INTERNAL function to sample a wavetable
+ *
+ * @param oscillator to pull samples from
+ * @param output buffer
+ * @param enable frequency modulation
+ * @param frequency modulation samples
+ * @param enable amplitude modulation
+ * @param amplitude modulation samples
+ * @param enables overwriting of output buffer, otherwise accumulate
+ * @param mono/stereo toggle
+ * @param base amplitude of outputted signal
+ * @param wavetable to use
+ */
+internal inline void nextNoiseSamples (
+    Oscillator* osc,
+    StereoBuffer output,
+    bool useAmpMod,
+    Buffer amplitudeModulation,
+    bool overwrite,
+    bool mono,
+    f32 amplitude)
+{
+    for (int i = 0; i < output.leftBuffer.len; i++)
+    {
+        //- ojf: calculate noise sample and modulate
+        f32 sample = ((f32) rand() / (f32) RAND_MAX) * 2.0 - 1.0;
+        sample *= amplitude + (useAmpMod ? amplitudeModulation[i] : 0);
+
+        //- ojf: write to buffer
+        if (overwrite)
+        {
+            output.leftBuffer[i] = sample;
+            if (! mono)
+            {
+                output.rightBuffer[i] = sample;
+            }
+        }
+        else
+        {
+            output.leftBuffer[i] += sample;
+            if (! mono)
+            {
+                output.rightBuffer[i] += sample;
+            }
+        }
+    }
+}
+
+/**
+ * INTERNAL processing function that encapsulates both mono and stereo
+ * functions
+ * @param oscillator to pull samples from
+ * @param output buffer
+ * @param enable frequency modulation
+ * @param frequency modulation samples
+ * @param enable amplitude modulation
+ * @param amplitude modulation samples
+ * @param enables overwriting of output buffer, otherwise accumulate
+ * @param mono/stereo toggle
+ * @param base amplitude of outputted signal
+ */
+internal inline void _nextOscillatorSamples (
+    Oscillator* osc,
+    StereoBuffer output,
+    bool useFreqMod,
+    Buffer frequencyMod,
+    bool useAmpMod,
+    Buffer amplitudeMod,
+    bool overwrite,
+    bool mono,
+    f32 amplitude)
+{
+    //- ojf: choose appropriate wavetable to call
+    switch (osc->type)
+    {
+        case OSC_SINE:
+        {
+            nextSineSamples (
+                osc,
+                output,
                 useFreqMod,
                 frequencyMod,
                 useAmpMod,
                 amplitudeMod,
                 overwrite,
                 mono,
-                amplitude
-            );
+                amplitude);
             break;
         }
-        case OSC_NOISE: {
-            nextNoiseSamples(
-                osc, 
-                output, 
+        case OSC_NOISE:
+        {
+            nextNoiseSamples (
+                osc,
+                output,
                 useAmpMod,
                 amplitudeMod,
                 overwrite,
                 mono,
-                amplitude
-            );
+                amplitude);
             break;
         }
-        case OSC_SQUARE: {
-            _sampleTable(
-                osc, 
-                output, 
+        case OSC_SQUARE:
+        {
+            sampleTable (
+                osc,
+                output,
                 useFreqMod,
                 frequencyMod,
                 useAmpMod,
                 amplitudeMod,
                 overwrite,
                 mono,
-                amplitude, 
-                square_N2048_f40_o9
-            );
-            break;
-        } case OSC_SAW: {
-            _sampleTable(
-                osc, 
-                output, 
-                useFreqMod,
-                frequencyMod,
-                useAmpMod,
-                amplitudeMod,
-                overwrite,
-                mono,
-                amplitude, 
-                saw_N2048_f40_o9
-            );
+                amplitude,
+                square_N2048_f40_o9);
             break;
         }
-        case OSC_TRIANGLE: {
-            _sampleTable(
-                osc, 
-                output, 
+        case OSC_SAW:
+        {
+            sampleTable (
+                osc,
+                output,
                 useFreqMod,
                 frequencyMod,
                 useAmpMod,
                 amplitudeMod,
                 overwrite,
                 mono,
-                amplitude, 
-                triangle_N2048_f40_o9
-            );
+                amplitude,
+                saw_N2048_f40_o9);
+            break;
+        }
+        case OSC_TRIANGLE:
+        {
+            sampleTable (
+                osc,
+                output,
+                useFreqMod,
+                frequencyMod,
+                useAmpMod,
+                amplitudeMod,
+                overwrite,
+                mono,
+                amplitude,
+                triangle_N2048_f40_o9);
             break;
         }
     }
 }
 
-void nextOscillatorSamplesMono(
-    Oscillator *osc,
-    Slice<f32> output,
+void nextOscillatorSamplesMono (
+    Oscillator* osc,
+    Buffer output,
     bool useFreqMod,
-    Slice<f32> frequencyMod,
+    Buffer frequencyMod,
     bool useAmpMod,
-    Slice<f32> amplitudeMod,
+    Buffer amplitudeMod,
     bool overwrite,
-    f32 amplitude
-) {
-    _nextOscillatorSamples(
-        osc, 
-        { .leftBuffer = output }, 
+    f32 amplitude)
+{
+    _nextOscillatorSamples (
+        osc,
+        { .leftBuffer = output },
         useFreqMod,
         frequencyMod,
         useAmpMod,
         amplitudeMod,
         overwrite,
-        true, 
-        amplitude
-    );
+        true,
+        amplitude);
 }
 
-void nextOscillatorSamples(
-    Oscillator *osc,
+void nextOscillatorSamples (
+    Oscillator* osc,
     StereoBuffer output,
     bool useFreqMod,
-    Slice<f32> frequencyMod,
+    Buffer frequencyMod,
     bool useAmpMod,
-    Slice<f32> amplitudeMod,
+    Buffer amplitudeMod,
     bool overwrite,
-    f32 amplitude
-) {
-    _nextOscillatorSamples(
-        osc, 
-        output, 
+    f32 amplitude)
+{
+    _nextOscillatorSamples (
+        osc,
+        output,
         useFreqMod,
         frequencyMod,
         useAmpMod,
         amplitudeMod,
         overwrite,
-        false, 
-        amplitude
-    );
+        false,
+        amplitude);
 }
 
-void setOscillatorFrequency(Oscillator *osc, f32 frequency) {
-    osc->frequency = frequency;
-    osc->phaseDelta = osc->frequency / osc->sampleRate;
+Oscillator createOscillator (OscillatorType type, f32 sampleRate, f32 frequency)
+{
+    Oscillator osc = {
+        .type = type,
+        .sampleRate = sampleRate
+    };
 
-    usize octave = 0; 
-    if (frequency > wavetable_f0) {
+    osc.frequency = frequency;
+
+    //- ojf: calculate which octave to pull from when sampling wavetable
+    usize octave = 0;
+    if (frequency > wavetable_f0)
+    {
         f32 f0 = wavetable_f0;
 
-        for (int n=0; n <= wavetable_octaves; n++) {
+        for (int n = 0; n <= wavetable_octaves; n++)
+        {
             octave = n;
-            if (frequency < f0*2) {
+            if (frequency < f0 * 2)
+            {
                 break;
             }
             f0 *= 2;
         }
     }
 
-    osc->octave = octave;
-}
-
-Oscillator createOscillator(OscillatorType type, f32 sampleRate, f32 frequency) {
-    Oscillator osc = {
-        .type = type,
-        .sampleRate = sampleRate
-    };
-
-    setOscillatorFrequency(&osc, frequency);
+    osc.octave = octave;
     return osc;
 }
 
-Lfo createLfo(OscillatorType type, f32 sampleRate, usize blockSize, f32 frequency, f32 depth) {
+//------------------------------
+//~ ojf: lfos
+
+Lfo createLfo (OscillatorType type, f32 sampleRate, usize blockSize, f32 frequency, f32 depth)
+{
     return {
-        .mod = createSlice(blockSize),
-        .osc = createOscillator(type, sampleRate, frequency),
+        .mod = createSlice (blockSize),
+        .osc = createOscillator (type, sampleRate, frequency),
         .depth = depth,
     };
 }
 
 //------------------------------
-//~ ojf: voice processing
+//~ ojf: voices
 
-void nextVoiceSamples(Voice *voice, StereoBuffer output, bool overwrite) {
-    if (voice->enableMetaFrequencyLfo) {
-        nextOscillatorSamplesMono(
+void nextVoiceSamples (Voice* voice, StereoBuffer output, bool overwrite)
+{
+    //- ojf: update meta frequency lfo
+    if (voice->enableMetaFrequencyLfo)
+    {
+        nextOscillatorSamplesMono (
             &voice->metaFrequencyLfo.osc,
             voice->metaFrequencyLfo.mod,
-            false, {},
-            false, {},
+            false,
+            {},
+            false,
+            {},
             true,
-            voice->metaFrequencyLfo.depth
-        );
+            voice->metaFrequencyLfo.depth);
     }
 
-    if (voice->enableFrequencyLfo) {
-        nextOscillatorSamplesMono(
+    //- ojf: update frequency lfo
+    if (voice->enableFrequencyLfo)
+    {
+        nextOscillatorSamplesMono (
             &voice->frequencyLfo.osc,
             voice->frequencyLfo.mod,
-            voice->enableMetaFrequencyLfo, voice->metaFrequencyLfo.mod,
-            false, {},
+            voice->enableMetaFrequencyLfo,
+            voice->metaFrequencyLfo.mod,
+            false,
+            {},
             true,
-            voice->frequencyLfo.depth
-        );
+            voice->frequencyLfo.depth);
     }
 
-    if (voice->enableMetaAmplitudeLfo) {
-        nextOscillatorSamplesMono(
+    //- ojf: update meta amplitude lfo
+    if (voice->enableMetaAmplitudeLfo)
+    {
+        nextOscillatorSamplesMono (
             &voice->metaAmplitudeLfo.osc,
             voice->metaAmplitudeLfo.mod,
-            false, {},
-            false, {},
+            false,
+            {},
+            false,
+            {},
             true,
-            voice->metaAmplitudeLfo.depth
-        );
-    }
-    if (voice->enableAmplitudeLfo) {
-        nextOscillatorSamplesMono(
-            &voice->amplitudeLfo.osc,
-            voice->amplitudeLfo.mod,
-            voice->enableMetaAmplitudeLfo, voice->metaAmplitudeLfo.mod,
-            false, {},
-            true,
-            voice->amplitudeLfo.depth
-        );
+            voice->metaAmplitudeLfo.depth);
     }
 
-    nextOscillatorSamples(
-        &voice->oscillator, 
-        output, 
-        voice->enableFrequencyLfo, voice->frequencyLfo.mod,
-        voice->enableAmplitudeLfo, voice->amplitudeLfo.mod,
+    //- ojf: update amplitude lfo
+    if (voice->enableAmplitudeLfo)
+    {
+        nextOscillatorSamplesMono (
+            &voice->amplitudeLfo.osc,
+            voice->amplitudeLfo.mod,
+            voice->enableMetaAmplitudeLfo,
+            voice->metaAmplitudeLfo.mod,
+            false,
+            {},
+            true,
+            voice->amplitudeLfo.depth);
+    }
+
+    //- ojf: next oscillator
+    nextOscillatorSamples (
+        &voice->oscillator,
+        output,
+        voice->enableFrequencyLfo,
+        voice->frequencyLfo.mod,
+        voice->enableAmplitudeLfo,
+        voice->amplitudeLfo.mod,
         overwrite,
         voice->volume);
 }
-
